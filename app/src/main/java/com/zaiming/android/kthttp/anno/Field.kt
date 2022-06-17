@@ -1,0 +1,5 @@
+package com.zaiming.android.kthttp.anno
+
+@Target(AnnotationTarget.VALUE_PARAMETER)
+@Retention(AnnotationRetention.RUNTIME)
+annotation class Field(val value: String)
