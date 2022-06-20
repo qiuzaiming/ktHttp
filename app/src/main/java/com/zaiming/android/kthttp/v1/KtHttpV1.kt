@@ -1,11 +1,14 @@
 package com.zaiming.android.kthttp.v1
 
 import com.google.gson.Gson
+import com.google.gson.internal.`$Gson$Types`.getRawType
 import com.zaiming.android.kthttp.anno.Field
 import com.zaiming.android.kthttp.anno.GET
+import com.zaiming.android.kthttp.interfaces.KtCall
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.lang.reflect.Method
+import java.lang.reflect.ParameterizedType
 import java.lang.reflect.Proxy
 
 
@@ -17,40 +20,63 @@ object KtHttpV1 {
 
     var baseUrl = "https://baseurl.com"
 
-    inline fun <reified T> create(): T {
+    fun <T: Any> create(service: Class<T>): T {
         return Proxy.newProxyInstance(
-            T::class.java.classLoader,
-            arrayOf(T::class.java)
-        ) { proxy, method, args ->
+            service.classLoader,
+            arrayOf<Class<*>>(service)
+        ) { _, method, args ->
+            val annotations = method.annotations
+            for (annotation in annotations) {
+                if (annotation is GET) {
+                    val url = baseUrl + annotation.value
+                    return@newProxyInstance invoke<T>(url, method, args)
+                }
+            }
+            return@newProxyInstance null
 
-            return@newProxyInstance method.annotations
-                .filterIsInstance<GET>()
-                .takeIf { it.size == 1 }
-                ?.let { invoke("$baseUrl${it.first().value}", method, args) }
         } as T
     }
 
-    fun invoke(url: String, method: Method, args: Array<Any>): Any? {
 
-        return method.parameterAnnotations
-            .takeIf { it.size == args.size }
-            ?.mapIndexed { index, it -> Pair(it, args[index]) }
-            ?.fold(url, ::parseUrl)
-            ?.let { Request.Builder().url(it).build() }
-            ?.let { okHttpClient.newCall(it).execute().body?.string() }
-            ?.let { gson.fromJson(it, method.genericReturnType) }
-    }
+     private fun <T: Any> invoke(path: String, method: Method, args: Array<Any>): Any? {
 
-    private fun parseUrl(acc: String, pair: Pair<Array<Annotation>, Any>) =
-        pair.first.filterIsInstance<Field>()
-            .first()
-            .let { field ->
-                if (acc.contains("?")) {
-                    "$acc&${field.value}=${pair.second}"
-                } else {
-                    "$acc?${field.value}=${pair.second}"
+        if (method.parameterAnnotations.size != args.size) return null
+
+        var url = path
+        val parameterAnnotations = method.parameterAnnotations
+
+        for (i in parameterAnnotations.indices) {
+            for (parameterAnnotation in parameterAnnotations[i]) {
+                if (parameterAnnotation is Field) {
+                    val key = parameterAnnotation.value
+                    val value = args[i].toString()
+                    if (!url.contains("?")) {
+                        url += "?$key=$value"
+                    } else {
+                        url += "&$key=$value"
+                    }
                 }
             }
+        }
 
+        val request = Request.Builder()
+            .url(url)
+            .build()
+
+        val call = okHttpClient.newCall(request)
+
+         return if (isKtCallReturn(method)) {
+             KtCall<T>(call, gson, getTypeArgument(method))
+         } else {
+             val response = okHttpClient.newCall(request).execute()
+             gson.fromJson<Any?>(response.body?.string(), method.genericReturnType)
+         }
+
+    }
+
+    private fun getTypeArgument(method: Method) =
+        (method.genericReturnType as ParameterizedType).actualTypeArguments[0]
+
+    private fun isKtCallReturn(method: Method) = getRawType(method.genericReturnType) == KtCall::class.java
 
 }

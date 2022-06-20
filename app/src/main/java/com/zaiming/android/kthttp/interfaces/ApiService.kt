@@ -10,5 +10,5 @@ interface ApiService {
     fun repos(
         @Field("lang") lang: String,
         @Field("since") since: String
-    ): RepoList
+    ): KtCall<RepoList>
 }
