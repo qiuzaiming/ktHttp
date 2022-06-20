@@ -11,66 +11,46 @@ import java.lang.reflect.Proxy
 
 object KtHttpV1 {
 
-    private var okHttpClient = OkHttpClient()
+    private val okHttpClient by lazy { OkHttpClient() }
 
-    private var gson: Gson = Gson()
+    private val gson: Gson by lazy { Gson() }
 
-    private var baseUrl = "https://baseurl.com"
+    var baseUrl = "https://baseurl.com"
 
-    fun <T> create(service: Class<T>): T {
+    inline fun <reified T> create(): T {
         return Proxy.newProxyInstance(
-            service.classLoader,
-            arrayOf<Class<*>>(service)
+            T::class.java.classLoader,
+            arrayOf(T::class.java)
         ) { proxy, method, args ->
-            val annotations = method.annotations
 
-            for (annotation in annotations) {
-                if (annotation is GET) {
-                    val url = baseUrl + annotation.value
-                    return@newProxyInstance invoke(url, method, args!!)
-                }
-            }
-
-            return@newProxyInstance null
-
+            return@newProxyInstance method.annotations
+                .filterIsInstance<GET>()
+                .takeIf { it.size == 1 }
+                ?.let { invoke("$baseUrl${it.first().value}", method, args) }
         } as T
     }
 
-    private fun invoke(path: String, method: Method, args: Array<Any>): Any? {
+    fun invoke(url: String, method: Method, args: Array<Any>): Any? {
 
-        if (method.parameterAnnotations.size != args.size) return null
+        return method.parameterAnnotations
+            .takeIf { it.size == args.size }
+            ?.mapIndexed { index, it -> Pair(it, args[index]) }
+            ?.fold(url, ::parseUrl)
+            ?.let { Request.Builder().url(it).build() }
+            ?.let { okHttpClient.newCall(it).execute().body?.string() }
+            ?.let { gson.fromJson(it, method.genericReturnType) }
+    }
 
-        var url = path
-
-        val parameterAnnotations = method.parameterAnnotations
-        for (i in parameterAnnotations.indices) {
-            for (parameterAnnotation in parameterAnnotations[i]) {
-                if (parameterAnnotation is Field) {
-                    val key = parameterAnnotation.value
-                    val value = args[i].toString()
-                    if (!url.contains("?")) {
-                        url += "?$key=$value"
-                    } else {
-                        url += "&$key=$value"
-                    }
+    private fun parseUrl(acc: String, pair: Pair<Array<Annotation>, Any>) =
+        pair.first.filterIsInstance<Field>()
+            .first()
+            .let { field ->
+                if (acc.contains("?")) {
+                    "$acc&${field.value}=${pair.second}"
+                } else {
+                    "$acc?${field.value}=${pair.second}"
                 }
             }
-        }
-
-
-        val request = Request.Builder()
-            .url(url)
-            .build()
-        val response = okHttpClient.newCall(request).execute()
-        val genericReturnType = method.genericReturnType
-
-        val body = response.body
-        val json = body?.string()
-
-        val result = gson.fromJson<Any?>(json, genericReturnType)
-
-        return result
-    }
 
 
 }
