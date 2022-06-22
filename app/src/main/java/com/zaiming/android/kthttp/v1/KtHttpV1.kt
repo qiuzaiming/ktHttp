@@ -22,76 +22,75 @@ object KtHttpV1 {
 
     var baseUrl = "https://baseurl.com"
 
-    fun <T: Any> create(service: Class<T>): T {
+    fun <T : Any> create(service: Class<T>): T {
         return Proxy.newProxyInstance(
             service.classLoader,
             arrayOf<Class<*>>(service)
         ) { _, method, args ->
-            val annotations = method.annotations
-            for (annotation in annotations) {
-                if (annotation is GET) {
-                    val url = baseUrl + annotation.value
-                    return@newProxyInstance invoke<T>(url, method, args)
+
+            method.annotations
+                .forEach {
+                    if (it is GET) {
+                        val url = baseUrl + it.value
+                        return@newProxyInstance invoke<T>(url, method, args)
+                    }
                 }
-            }
+
             return@newProxyInstance null
 
         } as T
     }
 
 
-     private fun <T: Any> invoke(path: String, method: Method, args: Array<Any>): Any? {
+    private fun <T : Any> invoke(path: String, method: Method, args: Array<Any>): Any? {
 
-        if (method.parameterAnnotations.size != args.size) return null
+        return method.parameterAnnotations
+            .takeIf { it.size == args.size }
+            ?.mapIndexed { index, arrayOfAnnotations -> Pair(arrayOfAnnotations, args[index]) }
+            ?.fold(path, ::parseUrl)
+            ?.let { Request.Builder().url(it).build() }
+            ?.let {
+                val call = okHttpClient.newCall(it)
+                return@let when {
 
-        var url = path
-        val parameterAnnotations = method.parameterAnnotations
+                    isKtCallReturn(method) -> {
+                        KtCall<T>(call, gson, getTypeArgument(method))
+                    }
 
-        for (i in parameterAnnotations.indices) {
-            for (parameterAnnotation in parameterAnnotations[i]) {
-                if (parameterAnnotation is Field) {
-                    val key = parameterAnnotation.value
-                    val value = args[i].toString()
-                    if (!url.contains("?")) {
-                        url += "?$key=$value"
-                    } else {
-                        url += "&$key=$value"
+                    isFlowReturn(method) -> {
+                        flow<T> {
+                            val response = okHttpClient.newCall(it).execute()
+                            emit(gson.fromJson<T>(response.body?.string(),
+                                method.genericReturnType))
+                        }
+                    }
+
+                    else -> {
+                        val response = okHttpClient.newCall(it).execute()
+                        gson.fromJson(response.body?.string(), method.genericReturnType)
                     }
                 }
             }
-        }
-
-        val request = Request.Builder()
-            .url(url)
-            .build()
-
-        val call = okHttpClient.newCall(request)
-
-         return when {
-             isKtCallReturn(method) -> {
-                 KtCall<T>(call, gson, getTypeArgument(method))
-             }
-
-             isFlowReturn(method) -> {
-                 flow<T> {
-                     val response = okHttpClient.newCall(request).execute()
-                     emit(gson.fromJson<T>(response.body?.string(), method.genericReturnType))
-                 }
-             }
-
-             else -> {
-                 val response = okHttpClient.newCall(request).execute()
-                 gson.fromJson(response.body?.string(), method.genericReturnType)
-             }
-         }
-
     }
+
+    private fun parseUrl(acc: String, pair: Pair<Array<Annotation>, Any>) =
+        pair.first.filterIsInstance<Field>()
+            .first()
+            .let { field ->
+                if (acc.contains("?")) {
+                    "$acc&${field.value}=${pair.second}"
+                } else {
+                    "$acc?${field.value}=${pair.second}"
+                }
+            }
 
     private fun getTypeArgument(method: Method) =
         (method.genericReturnType as ParameterizedType).actualTypeArguments[0]
 
-    private fun isKtCallReturn(method: Method) = getRawType(method.genericReturnType) == KtCall::class.java
+    private fun isKtCallReturn(method: Method) =
+        getRawType(method.genericReturnType) == KtCall::class.java
 
-    private fun isFlowReturn(method: Method) = getRawType(method.genericReturnType) == Flow::class.java
+    private fun isFlowReturn(method: Method) =
+        getRawType(method.genericReturnType) == Flow::class.java
 
 }
