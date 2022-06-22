@@ -5,6 +5,8 @@ import com.google.gson.internal.`$Gson$Types`.getRawType
 import com.zaiming.android.kthttp.anno.Field
 import com.zaiming.android.kthttp.anno.GET
 import com.zaiming.android.kthttp.interfaces.KtCall
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.lang.reflect.Method
@@ -65,11 +67,22 @@ object KtHttpV1 {
 
         val call = okHttpClient.newCall(request)
 
-         return if (isKtCallReturn(method)) {
-             KtCall<T>(call, gson, getTypeArgument(method))
-         } else {
-             val response = okHttpClient.newCall(request).execute()
-             gson.fromJson<Any?>(response.body?.string(), method.genericReturnType)
+         return when {
+             isKtCallReturn(method) -> {
+                 KtCall<T>(call, gson, getTypeArgument(method))
+             }
+
+             isFlowReturn(method) -> {
+                 flow<T> {
+                     val response = okHttpClient.newCall(request).execute()
+                     emit(gson.fromJson<T>(response.body?.string(), method.genericReturnType))
+                 }
+             }
+
+             else -> {
+                 val response = okHttpClient.newCall(request).execute()
+                 gson.fromJson(response.body?.string(), method.genericReturnType)
+             }
          }
 
     }
@@ -78,5 +91,7 @@ object KtHttpV1 {
         (method.genericReturnType as ParameterizedType).actualTypeArguments[0]
 
     private fun isKtCallReturn(method: Method) = getRawType(method.genericReturnType) == KtCall::class.java
+
+    private fun isFlowReturn(method: Method) = getRawType(method.genericReturnType) == Flow::class.java
 
 }
